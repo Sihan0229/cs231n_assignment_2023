@@ -22,6 +22,6 @@ class Model(nn.Module):
 
     def forward(self, x):
         x = self.f(x)
-        feature = torch.flatten(x, start_dim=1)
+        feature = torch.flatten(x, start_dim=1) # 展平成一维向量
         out = self.g(feature)
         return F.normalize(feature, dim=-1), F.normalize(out, dim=-1)

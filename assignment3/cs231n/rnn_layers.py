@@ -348,14 +348,28 @@ def lstm_step_forward(x, prev_h, prev_c, Wx, Wh, b):
     - next_c: Next cell state, of shape (N, H)
     - cache: Tuple of values needed for backward pass.
     """
-    next_h, next_c, cache = None, None, None
+    
     #############################################################################
     # TODO: Implement the forward pass for a single timestep of an LSTM.        #
     # You may want to use the numerically stable sigmoid implementation above.  #
     #############################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    # Compute the activation vector and split to 4
+    a = np.hsplit(x @ Wx + prev_h @ Wh + b, 4)
+
+    # Compute gate vals
+    i = sigmoid(a[0]) # 输入
+    f = sigmoid(a[1]) # 遗忘
+    o = sigmoid(a[2]) # 输出
+    g = np.tanh(a[3]) # 细胞
+
+    # 更新下一个细胞状态
+    next_c = f * prev_c + i * g
+    # 更新下一个隐藏状态
+    next_h = o * np.tanh(next_c)
+
+    cache = (prev_h, prev_c, next_c, i, f, o, g, x, Wx, Wh)
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ##############################################################################
@@ -390,7 +404,26 @@ def lstm_step_backward(dnext_h, dnext_c, cache):
     #############################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    # Retrieve elements from cache
+    prev_h, prev_c, next_c, i, f, o, g, x, Wx, Wh = cache
+
+    # Compute full partial derivative of dnext_c and dprev_c
+    dnext_c += dnext_h * o * (1 - np.square(np.tanh(next_c)))
+    dprev_c = dnext_c * f
+
+    # 计算中间值（a0、a1、a2、a3）的偏导数。
+    da0 = dnext_c * g * i * (1 - i)
+    da1 = dnext_c * prev_c * f * (1 - f)
+    da2 = dnext_h * np.tanh(next_c) * o * (1 - o)
+    da3 = dnext_c * i * (1 - np.square(g))
+    da = np.hstack((da0, da1, da2, da3))
+
+    # 计算偏导数
+    dx = da @ Wx.T
+    dprev_h = da @ Wh.T
+    dWx = x.T @ da
+    dWh = prev_h.T @ da
+    db = da.sum(axis=0)
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ##############################################################################
@@ -429,7 +462,17 @@ def lstm_forward(x, h0, Wx, Wh, b):
     #############################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    # 初始
+    c, hs, cache = np.zeros_like(h0), [h0], []
+
+    for t in range(x.shape[1]):
+        # Compute hidden + cell state at timestep t, append cache_t to list
+        h, c, cache_t = lstm_step_forward(x[:, t], hs[-1], c, Wx, Wh, b)
+        hs.append(h)
+        cache.append(cache_t)
+    
+    # 沿着T的方向堆叠，不包括h0
+    h = np.stack(hs[1:], axis=1)
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ##############################################################################
@@ -460,7 +503,23 @@ def lstm_backward(dh, cache):
     #############################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    # Get the shape values and initialize gradients
+    N, T, H = dh.shape
+    D, H4 = cache[0][8].shape
+    dx = np.empty((N, T, D))
+    dh0 = np.zeros((N, H))
+    dc0 = np.zeros((N, H))
+    dWx = np.zeros((D, H4))
+    dWh = np.zeros((H, H4))
+    db = np.zeros(H4)
+    
+    for t in range(T-1, -1, -1):
+        # Run backward pass for t^th timestep and update the gradient matrices
+        dx_t, dh0, dc0, dWx_t, dWh_t, db_t = lstm_step_backward(dh0 + dh[:, t], dc0, cache[t])
+        dx[:, t] = dx_t
+        dWx += dWx_t
+        dWh += dWh_t
+        db += db_t
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ##############################################################################

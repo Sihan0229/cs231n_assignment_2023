@@ -30,7 +30,8 @@ def sample_noise(batch_size, dim, seed=None):
 
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    noise = 2 * torch.rand(batch_size, dim) - 1
+    return noise
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
@@ -51,7 +52,15 @@ def discriminator(seed=None):
     ##############################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    model = nn.Sequential(
+      nn.Flatten(),
+      nn.Linear(784, 256, bias=True),
+      nn.LeakyReLU(negative_slope=0.01),
+      nn.Linear(256, 256, bias=True),
+      nn.LeakyReLU(negative_slope=0.01),
+      nn.Linear(256, 1, bias=True),
+    )
+
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ##############################################################################
@@ -76,7 +85,15 @@ def generator(noise_dim=NOISE_DIM, seed=None):
     ##############################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    model = nn.Sequential(
+
+      nn.Linear(noise_dim, 1024, bias=True),
+      nn.ReLU(),
+      nn.Linear(1024, 1024, bias=True),
+      nn.ReLU(),
+      nn.Linear(1024, 784, bias=True),
+      nn.Tanh()
+    )
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ##############################################################################
@@ -112,7 +129,14 @@ def discriminator_loss(logits_real, logits_fake):
     loss = None
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    # true张量全0,false张量全1
+    true_labels = torch.ones(logits_real.shape[0]).type(dtype)
+    false_labels = torch.zeros(logits_fake.shape[0]).type(dtype)
+    # 将真实数据和生成数据的分数张量连接在一起，得到形状为(2N,)的张量
+    targets = torch.cat([true_labels, false_labels], dim=0)
+    logits = torch.cat([logits_real, logits_fake], dim=0)
+
+    loss = bce_loss(logits, targets) * 2
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     return loss
@@ -130,7 +154,9 @@ def generator_loss(logits_fake):
     loss = None
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    targets = torch.ones(logits_fake.shape[0]).type(dtype)
+
+    loss = bce_loss(logits_fake, targets)
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     return loss
@@ -149,7 +175,10 @@ def get_optimizer(model):
     optimizer = None
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    optimizer = optim.Adam(
+        params=model.parameters(), 
+        lr=1e-3, 
+        betas=(0.5, 0.99))
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     return optimizer
@@ -168,7 +197,7 @@ def ls_discriminator_loss(scores_real, scores_fake):
     loss = None
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    loss = 0.5 * ((scores_real-1)**2).mean(axis=0) + 0.5 * (scores_fake**2).mean(axis=0)
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     return loss
@@ -186,7 +215,8 @@ def ls_generator_loss(scores_fake):
     loss = None
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    loss = 0.5 * ((scores_fake-1)**2).mean(axis=0)
+
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     return loss
@@ -204,8 +234,21 @@ def build_dc_classifier(batch_size):
     ##############################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    model = nn.Sequential(
+      nn.Conv2d(in_channels=1, out_channels=32, kernel_size=5, stride=1, bias=True),
+      nn.LeakyReLU(negative_slope=0.01),
+      nn.MaxPool2d(kernel_size=2, stride=2),
+      nn.Conv2d(in_channels=32, out_channels=64, kernel_size=5, stride=1, bias=True),
+      nn.LeakyReLU(negative_slope=0.01),
+      nn.MaxPool2d(kernel_size=2, stride=2),
+      nn.Flatten(),
+      nn.Linear(in_features=4*4*64, out_features=4*4*64, bias=True),
+      nn.LeakyReLU(negative_slope=0.01),
+      nn.Linear(in_features=4*4*64, out_features=1, bias=True),
+      
+    )
 
+    return model
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ##############################################################################
     #                               END OF YOUR CODE                             #
@@ -225,7 +268,27 @@ def build_dc_generator(noise_dim=NOISE_DIM):
     ##############################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    model = nn.Sequential(
+      nn.Linear(in_features=noise_dim, out_features=1024, bias=True),
+      nn.ReLU(),
+      nn.BatchNorm1d(num_features=1024),
+      nn.Linear(in_features=1024, out_features=7*7*128, bias=True),
+      nn.ReLU(),
+      nn.BatchNorm1d(num_features=7*7*128),
+      nn.Unflatten(dim=1, unflattened_size=(128, 7, 7)),
+      nn.ConvTranspose2d(in_channels=128, out_channels=64, kernel_size=4,
+                         stride=2, padding=1),
+      nn.ReLU(),
+      nn.BatchNorm2d(num_features=64),
+      nn.ConvTranspose2d(in_channels=64, out_channels=1, kernel_size=4,
+                         stride=2, padding=1),
+      nn.Tanh(),
+      nn.Flatten(),
+      
+    )
+    return model
+
+
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ##############################################################################
@@ -250,18 +313,25 @@ def run_a_gan(D, G, D_solver, G_solver, discriminator_loss, generator_loss, load
     """
     images = []
     iter_count = 0
+    # 外层循环控制迭代次数
+    # 内层循环遍历训练数据加载器loader_train中的批量数据
     for epoch in range(num_epochs):
         for x, _ in loader_train:
             if len(x) != batch_size:
                 continue
-            D_solver.zero_grad()
+            D_solver.zero_grad() # 判别器的梯度清零
             real_data = x.type(dtype)
+            # 通过判别器D计算真实数据的分数logits_real
             logits_real = D(2* (real_data - 0.5)).type(dtype)
 
+            # 生成一个噪声种子g_fake_seed，并通过生成器G生成假图像fake_images
+            # 并将其从计算图中分离（detach）
+            # 通过判别器D计算假图像的分数logits_fake
             g_fake_seed = sample_noise(batch_size, noise_size).type(dtype)
             fake_images = G(g_fake_seed).detach()
             logits_fake = D(fake_images.view(batch_size, 1, 28, 28))
 
+            # D_solver进行参数更新
             d_total_error = discriminator_loss(logits_real, logits_fake)
             d_total_error.backward()
             D_solver.step()
@@ -270,9 +340,13 @@ def run_a_gan(D, G, D_solver, G_solver, discriminator_loss, generator_loss, load
             g_fake_seed = sample_noise(batch_size, noise_size).type(dtype)
             fake_images = G(g_fake_seed)
 
+            # 将生成器的梯度清零，并再次生成噪声种子g_fake_seed
+            # 通过生成器G生成假图像fake_images。
+            # 通过判别器D计算生成的假图像的分数gen_logits_fake。计算生成器的损失g_error
             gen_logits_fake = D(fake_images.view(batch_size, 1, 28, 28))
             g_error = generator_loss(gen_logits_fake)
             g_error.backward()
+            # G_solver进行参数更新
             G_solver.step()
 
             if (iter_count % show_every == 0):

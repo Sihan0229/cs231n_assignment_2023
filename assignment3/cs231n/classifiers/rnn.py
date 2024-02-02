@@ -21,7 +21,7 @@ class CaptioningRNN:
         input_dim=512,   # 输入图像特征向量的维度 D
         wordvec_dim=128, # 单词向量的维度 W
         hidden_dim=128,  # HS
-        cell_type="rnn",
+        cell_type="lstm",
         dtype=np.float32,
     ):
         """
@@ -79,6 +79,7 @@ class CaptioningRNN:
         for k, v in self.params.items():
             self.params[k] = v.astype(self.dtype)
 
+    
     def loss(self, features, captions):
         """
         Compute training-time loss for the RNN. We input image features and
@@ -135,36 +136,49 @@ class CaptioningRNN:
         # (3) Use either a vanilla RNN or LSTM (depending on self.cell_type) to    #
         #     process the sequence of input word vectors and produce hidden state  #
         #     vectors for all timesteps, producing an array of shape (N, T, H).    #
-        if self.cell_type == 'rnn':
-            h, cache_rnn = rnn_forward(x, h0, Wx, Wh, b)
-        elif self.cell_type == 'lstm':
-            h, cache_rnn = lstm_forward(x, h0, Wx, Wh, b)
+        if self.cell_type == "rnn":
+            # If cell type is regular RNN
+            recurrent_forward = rnn_forward
+            recurrent_backward = rnn_backward
+        elif self.cell_type == "lstm":
+            # If cell type is long short-term
+            recurrent_forward = lstm_forward
+            recurrent_backward = lstm_backward
+        h, cache_h = recurrent_forward(x, h0, Wx, Wh, b)
         # (4) Use a (temporal) affine transformation to compute scores over the    #
         #     vocabulary at every timestep using the hidden states, giving an      #
         #     array of shape (N, T, V).                                            #
         scores, cache_scores = temporal_affine_forward(h, W_vocab, b_vocab)
         # (5) Use (temporal) softmax to compute loss using captions_out, ignoring  #
         #     the points where the output word is <NULL> using the mask above.     #
-        loss, dx = temporal_softmax_loss(scores, captions_out, mask)
+        loss, dout = temporal_softmax_loss(scores, captions_out, mask)
 
         # In the backward pass you will need to compute the gradient of the loss   #
         # with respect to all model parameters. Use the loss and grads variables   #
         # defined above to store loss and gradients; grads[k] should give the      #
         # gradients for self.params[k].                                            #      
         # (4) 
-        dx, grads['W_vocab'], grads['b_vocab'] = temporal_affine_backward(dx, cache_scores)
-        # (3) 
-        if self.cell_type == 'rnn':
-            dx, dh, grads['Wx'], grads['Wh'], grads['b'] = rnn_backward(dx, cache_rnn)
-        elif self.cell_type == 'lstm':
-            dx, dh, grads['Wx'], grads['Wh'], grads['b'] = lstm_backward(dx, cache_rnn)
-        # (2)         
-        grads['W_embed'] = word_embedding_backward(dx, cache_embed)
+        dout, dW_vocab, db_vocab = temporal_affine_backward(dout, cache_scores)
+        # (3)
+        dout, dh0, dWx, dWh, db = recurrent_backward(dout, cache_h)
+        # (2)
+        dW_embed = word_embedding_backward(dout, cache_embed)
         # (1)
-        dh0, grads['W_proj'], grads['b_proj'] = affine_backward(dh, cache_affine)
+        _, dW_proj, db_proj = affine_backward(dh0, cache_affine)
 
+        grads = {
+            "W_proj": dW_proj,
+            "b_proj": db_proj,
+            "W_embed": dW_embed,
+            "Wx": dWx,
+            "Wh": dWh,
+            "b": db,
+            "W_vocab": dW_vocab,
+            "b_vocab": db_vocab
+        }
         return loss, grads
-
+    
+    '''
     def sample(self, features, max_length=30):
         """
         Run a test-time forward pass for the model, sampling captions for input
@@ -243,4 +257,92 @@ class CaptioningRNN:
             #     (the word index) to the appropriate slot in the captions variable   #
             word_predict = scores.argmax(1)
             captions[:, i] = word_predict
+        return captions
+    
+    '''
+
+    def sample(self, features, max_length=30):
+        """
+        Run a test-time forward pass for the model, sampling captions for input
+        feature vectors.
+
+        At each timestep, we embed the current word, pass it and the previous hidden
+        state to the RNN to get the next hidden state, use the hidden state to get
+        scores for all vocab words, and choose the word with the highest score as
+        the next word. The initial hidden state is computed by applying an affine
+        transform to the input image features, and the initial word is the <START>
+        token.
+
+        For LSTMs you will also have to keep track of the cell state; in that case
+        the initial cell state should be zero.
+
+        Inputs:
+        - features: Array of input image features of shape (N, D).
+        - max_length: Maximum length T of generated captions.
+
+        Returns:
+        - captions: Array of shape (N, max_length) giving sampled captions,
+          where each element is an integer in the range [0, V). The first element
+          of captions should be the first sampled word, not the <START> token.
+        """
+        N = features.shape[0]
+        captions = self._null * np.ones((N, max_length), dtype=np.int32)
+
+        # Unpack parameters
+        W_proj, b_proj = self.params["W_proj"], self.params["b_proj"]
+        W_embed = self.params["W_embed"]
+        Wx, Wh, b = self.params["Wx"], self.params["Wh"], self.params["b"]
+        W_vocab, b_vocab = self.params["W_vocab"], self.params["b_vocab"]
+
+        ###########################################################################
+        # TODO: Implement test-time sampling for the model. You will need to      #
+        # initialize the hidden state of the RNN by applying the learned affine   #
+        # transform to the input image features. The first word that you feed to  #
+        # the RNN should be the <START> token; its value is stored in the         #
+        # variable self._start. At each timestep you will need to do to:          #
+        # (1) Embed the previous word using the learned word embeddings           #
+        # (2) Make an RNN step using the previous hidden state and the embedded   #
+        #     current word to get the next hidden state.                          #
+        # (3) Apply the learned affine transformation to the next hidden state to #
+        #     get scores for all words in the vocabulary                          #
+        # (4) Select the word with the highest score as the next word, writing it #
+        #     (the word index) to the appropriate slot in the captions variable   #
+        #                                                                         #
+        # For simplicity, you do not need to stop generating after an <END> token #
+        # is sampled, but you can if you want to.                                 #
+        #                                                                         #
+        # HINT: You will not be able to use the rnn_forward or lstm_forward       #
+        # functions; you'll need to call rnn_step_forward or lstm_step_forward in #
+        # a loop.                                                                 #
+        #                                                                         #
+        # NOTE: we are still working over minibatches in this function. Also if   #
+        # you are using an LSTM, initialize the first cell state to zeros.        #
+        ###########################################################################
+        # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
+
+        # Initialize the hidden and cell states, input
+        h, _ = affine_forward(features, W_proj, b_proj)
+        x = np.repeat(self._start, N)
+        c = np.zeros_like(h)
+
+        for t in range(max_length):
+            # Generate the word embedding of a previous word
+            x, _ = word_embedding_forward(x, W_embed)
+
+            if self.cell_type == "rnn":
+                # If cell type is regular RNN
+                h, _ = rnn_step_forward(x, h, Wx, Wh, b)
+            elif self.cell_type == "lstm":
+                # If cell type is long short-term memory
+                h, c, _ = lstm_step_forward(x, h, c, Wx, Wh, b)
+
+            # Compute the final forward pass for t to get scores
+            out, _ = affine_forward(h, W_vocab, b_vocab)
+            x = np.argmax(out, axis=1)
+            captions[:, t] = x
+
+        # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
+        ############################################################################
+        #                             END OF YOUR CODE                             #
+        ############################################################################
         return captions
